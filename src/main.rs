@@ -90,16 +90,25 @@ impl Token {
 #[derive(Debug)]
 enum ParseError {
     UnmatchedQuote,
+    MalformedFloat,
+    UnexpectedDot,
+    UnexpectedEOF,
+    NumParseErr(std::num::ParseIntError),
+    InvalidASCII,
+    InvalidUnicode,
 }
 
 struct Tokenizer<'a> {
     source: std::iter::Peekable<Chars<'a>>,
+
+    token_buffer: Vec<Token>,
 }
 
 impl<'a> Tokenizer<'a> {
     fn new(source: Chars<'a>) -> Self {
         Self {
             source: source.peekable(),
+            token_buffer: Vec::new(),
         }
     }
 }
@@ -108,7 +117,9 @@ impl<'a> Iterator for Tokenizer<'a> {
     type Item = Result<Token, ParseError>;
 
     fn next(&mut self) -> Option<Result<Token, ParseError>> {
-        let mut token: String = "".into();
+        if self.token_buffer.len() > 0 {
+            return Some(Ok(self.token_buffer.remove(0)));
+        }
 
         // Get the next non-whitespace char
         let c = loop {
@@ -119,13 +130,34 @@ impl<'a> Iterator for Tokenizer<'a> {
         };
 
         // Numbers
-        if c.is_numeric() {
-            token = c.into();
+        if c.is_numeric() || c == '.' {
+            let mut has_dot = if c == '.'
+                && self.source.peek().is_some()
+                && self.source.peek().unwrap().is_numeric()
+            {
+                true
+            } else if c.is_numeric() {
+                false
+            } else {
+                return Some(Err(ParseError::MalformedFloat));
+            };
+
+            let mut token: String = c.into();
 
             while let Some(&peek_c) = self.source.peek() {
                 if peek_c.is_numeric() {
                     token.push(self.source.next().unwrap());
+                } else if peek_c == '.' {
+                    if has_dot {
+                        return Some(Err(ParseError::MalformedFloat));
+                    } else {
+                        token.push(self.source.next().unwrap());
+                        has_dot = true;
+                    }
                 } else {
+                    if !(peek_c.is_whitespace() || SpecialCharacter::from_char(peek_c).is_some()) {
+                        return Some(Err(ParseError::MalformedFloat));
+                    }
                     break;
                 }
             }
@@ -134,35 +166,154 @@ impl<'a> Iterator for Tokenizer<'a> {
         }
         // Special Chars
         else if let Some(special_char) = SpecialCharacter::from_char(c) {
+            if matches!(special_char, SpecialCharacter::Dot) {
+                return Some(Err(ParseError::UnexpectedDot));
+            }
             return Some(Ok(Token::Special(special_char)));
         }
         // Strings
         else if c == '"' {
-            while let Some(c) = self.source.next() {
-                if c != '"' {
-                    token.push(c);
-                    continue;
-                }
-                return Some(Ok(Token::Str(token)));
-            }
+            let mut token: String = "".into();
 
+            while let Some(c) = self.source.next() {
+                match c {
+                    '\\' => match self.source.next() {
+                        Some('\n') => {
+                            while let Some(c) = self.source.peek() {
+                                if c.is_whitespace() {
+                                    self.source.next();
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+
+                        Some('n') => token.push('\n'),
+                        Some('t') => token.push('\t'),
+                        Some('r') => token.push('\r'),
+                        Some('0') => token.push('\0'),
+
+                        Some('x') => {
+                            // ASCII
+                            let mut hex: String = "".into();
+
+                            match self.source.next() {
+                                Some('{') => (),
+                                Some(_) => return Some(Err(ParseError::InvalidASCII)),
+                                None => return Some(Err(ParseError::UnexpectedEOF)),
+                            }
+
+                            for _ in 0..2 {
+                                let next = self.source.next();
+                                if let None = next {
+                                    return Some(Err(ParseError::UnexpectedEOF));
+                                }
+                                hex.push(next.unwrap());
+                            }
+
+                            match self.source.next() {
+                                Some('}') => (),
+                                Some(_) => return Some(Err(ParseError::InvalidASCII)),
+                                None => return Some(Err(ParseError::UnexpectedEOF)),
+                            }
+
+                            let ascii_char: char = match u8::from_str_radix(&hex, 16) {
+                                Ok(num) if num <= 0x7F => num as char,
+                                Ok(_) => return Some(Err(ParseError::InvalidASCII)),
+                                Err(e) => return Some(Err(ParseError::NumParseErr(e))),
+                            };
+
+                            token.push(ascii_char);
+                        }
+                        Some('u') => {
+                            // UNICODE
+                            let mut hex: String = "".into();
+
+                            match self.source.next() {
+                                Some('{') => (),
+                                Some(_) => return Some(Err(ParseError::InvalidUnicode)),
+                                None => return Some(Err(ParseError::UnexpectedEOF)),
+                            }
+
+                            for _ in 0..7 {
+                                match self.source.next() {
+                                    Some('}') => break,
+                                    Some(c) => hex.push(c),
+                                    None => return Some(Err(ParseError::UnexpectedEOF)),
+                                }
+                            }
+
+                            let unicode_char = match usize::from_str_radix(&hex, 16) {
+                                Ok(num) => match std::char::from_u32(num as u32) {
+                                    Some(c) => c,
+                                    None => return Some(Err(ParseError::InvalidUnicode)),
+                                },
+                                Err(e) => return Some(Err(ParseError::NumParseErr(e))),
+                            };
+
+                            token.push(unicode_char);
+                        }
+
+                        Some(c) => token.push(c),
+                        None => return Some(Err(ParseError::UnmatchedQuote)),
+                    },
+                    '"' => return Some(Ok(Token::Str(token))),
+                    _ => token.push(c),
+                }
+            }
             return Some(Err(ParseError::UnmatchedQuote));
         }
         // Idents
         else if c.is_alphabetic() {
-            token = c.into();
+            let mut token = String::new();
+            token.push(c);
 
-            while let Some(&peeked) = self.source.peek() {
-                if peeked.is_alphanumeric() && SpecialCharacter::from_char(peeked).is_none() {
-                    token.push(self.source.next().unwrap());
-                } else {
-                    break;
+            loop {
+                // Read first ident
+                loop {
+                    match self.source.peek() {
+                        Some(c) if c.is_alphanumeric() => token.push(self.source.next().unwrap()),
+                        Some(_) => {
+                            self.token_buffer.push(Token::Ident(token.clone()));
+                            token.clear();
+                            break;
+                        }
+                        None => {
+                            self.token_buffer.push(Token::Ident(token.clone()));
+                            return Some(Ok(self.token_buffer.remove(0)));
+                        }
+                    }
+                }
+
+                // Skip whitespace
+                loop {
+                    match self.source.peek() {
+                        Some(c) if c.is_whitespace() => {
+                            self.source.next().unwrap();
+                        }
+                        Some(_) => break,
+                        None => return Some(Ok(self.token_buffer.remove(0))),
+                    }
+                }
+
+                // Return if no DOT operator
+                match self.source.peek() {
+                    Some('.') => {
+                        self.source.next().unwrap();
+                        self.token_buffer
+                            .push(Token::Special(SpecialCharacter::Dot));
+
+                        match self.source.peek() {
+                            Some(c) if c.is_alphanumeric() => (),
+                            Some(_) => return Some(Err(ParseError::MalformedFloat)),
+                            None => return Some(Err(ParseError::UnexpectedEOF)),
+                        }
+                    }
+                    _ => return Some(Ok(self.token_buffer.remove(0))),
                 }
             }
-
-            return Some(Ok(Token::Ident(token)));
-        } else {
-            unreachable!("Could not parse char: {}", c);
         }
+
+        unreachable!("Could not parse char: {}", c);
     }
 }
