@@ -21,6 +21,42 @@ fn tokenize(root_file: &str) -> Result<(), std::io::Error> {
 }
 
 #[derive(Debug)]
+enum Keyword {
+    Fn,
+    Struct,
+    If,
+    Else,
+    For,
+    In,
+    While,
+    Loop,
+    Continue,
+    Break,
+    Return,
+    Let,
+}
+
+impl Keyword {
+    fn from_str(keyword: &str) -> Option<Self> {
+        Some(match keyword {
+            "fn" => Self::Fn,
+            "struct" => Self::Struct,
+            "if" => Self::If,
+            "else" => Self::Else,
+            "for" => Self::For,
+            "in" => Self::In,
+            "while" => Self::While,
+            "loop" => Self::Loop,
+            "continue" => Self::Continue,
+            "break" => Self::Break,
+            "return" => Self::Return,
+            "let" => Self::Let,
+            _ => return None,
+        })
+    }
+}
+
+#[derive(Debug)]
 enum SpecialCharacter {
     Not,
     Dot,
@@ -69,20 +105,33 @@ impl SpecialCharacter {
 
 #[derive(Debug)]
 enum Token {
-    Number(String),
+    Integer(String),
+    Float(String),
     Str(String),
     Ident(String),
+    Keyword(Keyword),
     Special(SpecialCharacter),
 }
 
 impl Token {
     fn print(&self) {
         match self {
-            Self::Number(num) => println!("number: {}", num),
+            Self::Integer(int) => println!("int: {}", int),
+            Self::Float(num) => println!("float: {}", num),
             Self::Str(string) => println!("string: \"{}\"", string),
             Self::Special(SpecialCharacter::Semicolon) => println!("semicolon \n"),
             Self::Special(special) => println!("special: {:?}", special),
+            Self::Keyword(keyword) => println!("{:?}", keyword),
             Self::Ident(string) => println!("ident: {}", string),
+        }
+    }
+
+    /// Tries to parse the string as a keyword and if it fails returns a Token::Ident() with the provided string
+    fn from_ident_or_keyword(string: &String) -> Self {
+        if let Some(keyword) = Keyword::from_str(&string) {
+            return Self::Keyword(keyword);
+        } else {
+            return Self::Ident(string.clone());
         }
     }
 }
@@ -91,6 +140,7 @@ impl Token {
 enum ParseError {
     UnmatchedQuote,
     MalformedFloat,
+    MalformedInt,
     UnexpectedDot,
     UnexpectedEOF,
     NumParseErr(std::num::ParseIntError),
@@ -129,40 +179,59 @@ impl<'a> Iterator for Tokenizer<'a> {
             }
         };
 
-        // Numbers
-        if c.is_numeric() || c == '.' {
-            let mut has_dot = if c == '.'
-                && self.source.peek().is_some()
-                && self.source.peek().unwrap().is_numeric()
-            {
-                true
-            } else if c.is_numeric() {
-                false
-            } else {
-                return Some(Err(ParseError::MalformedFloat));
-            };
+        // Number
+        if c.is_numeric() {
+            let mut token = String::new();
+            token.push(c);
 
-            let mut token: String = c.into();
-
-            while let Some(&peek_c) = self.source.peek() {
-                if peek_c.is_numeric() {
-                    token.push(self.source.next().unwrap());
-                } else if peek_c == '.' {
-                    if has_dot {
-                        return Some(Err(ParseError::MalformedFloat));
-                    } else {
-                        token.push(self.source.next().unwrap());
-                        has_dot = true;
-                    }
-                } else {
-                    if !(peek_c.is_whitespace() || SpecialCharacter::from_char(peek_c).is_some()) {
-                        return Some(Err(ParseError::MalformedFloat));
-                    }
-                    break;
+            loop {
+                match self.source.peek() {
+                    Some(c) if c.is_numeric() => token.push(self.source.next().unwrap()),
+                    _ => break,
                 }
             }
 
-            return Some(Ok(Token::Number(token)));
+            match self.source.peek() {
+                Some('.') => {
+                    self.source.next().unwrap();
+                    token.push('.');
+                }
+                Some(c) if c.is_whitespace() || SpecialCharacter::from_char(*c).is_some() => {
+                    return Some(Ok(Token::Integer(token)));
+                }
+                Some(_) => return Some(Err(ParseError::MalformedInt)),
+                None => return Some(Ok(Token::Integer(token))),
+            }
+
+            // Number is a float
+            loop {
+                match self.source.peek() {
+                    Some('.') => return Some(Err(ParseError::MalformedFloat)),
+                    Some(c) if c.is_numeric() => token.push(self.source.next().unwrap()),
+                    Some(c) if c.is_whitespace() || SpecialCharacter::from_char(*c).is_some() => {
+                        return Some(Ok(Token::Float(token)));
+                    }
+                    Some(_) => return Some(Err(ParseError::MalformedFloat)),
+                    None => return Some(Ok(Token::Float(token))),
+                }
+            }
+        }
+        // Float with no leading number
+        else if c == '.' {
+            let mut token = String::new();
+            token.push(c);
+
+            loop {
+                match self.source.peek() {
+                    Some('.') => return Some(Err(ParseError::MalformedFloat)),
+                    Some(c) if c.is_numeric() => token.push(self.source.next().unwrap()),
+                    Some(c) if c.is_whitespace() || SpecialCharacter::from_char(*c).is_some() => {
+                        return Some(Ok(Token::Float(token)));
+                    }
+                    Some(_) => return Some(Err(ParseError::MalformedFloat)),
+                    None => return Some(Ok(Token::Float(token))),
+                }
+            }
         }
         // Special Chars
         else if let Some(special_char) = SpecialCharacter::from_char(c) {
@@ -274,12 +343,12 @@ impl<'a> Iterator for Tokenizer<'a> {
                     match self.source.peek() {
                         Some(c) if c.is_alphanumeric() => token.push(self.source.next().unwrap()),
                         Some(_) => {
-                            self.token_buffer.push(Token::Ident(token.clone()));
+                            self.token_buffer.push(Token::from_ident_or_keyword(&token));
                             token.clear();
                             break;
                         }
                         None => {
-                            self.token_buffer.push(Token::Ident(token.clone()));
+                            self.token_buffer.push(Token::from_ident_or_keyword(&token));
                             return Some(Ok(self.token_buffer.remove(0)));
                         }
                     }
@@ -304,7 +373,7 @@ impl<'a> Iterator for Tokenizer<'a> {
                             .push(Token::Special(SpecialCharacter::Dot));
 
                         match self.source.peek() {
-                            Some(c) if c.is_alphanumeric() => (),
+                            Some(c) if c.is_alphanumeric() => continue,
                             Some(_) => return Some(Err(ParseError::MalformedFloat)),
                             None => return Some(Err(ParseError::UnexpectedEOF)),
                         }
