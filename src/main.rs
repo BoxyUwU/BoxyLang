@@ -114,7 +114,7 @@ fn is_special_or_operator_char(character: char) -> bool {
     let is_special = || {
         matches!(
             character,
-            '.' | '{' | '}' | '[' | ']' | '<' | '>' | ';' | ':'
+            '.' | '{' | '}' | '[' | ']' | '(' | ')' | '<' | '>' | ';' | ':'
         )
     };
     let is_operator = || matches!(character, '!' | '=' | '+' | '-' | '*' | '/');
@@ -124,10 +124,12 @@ fn is_special_or_operator_char(character: char) -> bool {
 
 #[derive(Debug)]
 enum Token {
-    Operator(Operator),
     Integer(String),
     Float(String),
     Str(String),
+    Bool(bool),
+
+    Operator(Operator),
     Ident(String),
     Keyword(Keyword),
     Special(SpecialCharacter),
@@ -136,6 +138,7 @@ enum Token {
 impl Token {
     fn print(&self) {
         match self {
+            Self::Bool(b) => println!("bool: {}", b),
             Self::Operator(op) => println!("operator: {:?}", op),
             Self::Integer(int) => println!("int: {}", int),
             Self::Float(num) => println!("float: {}", num),
@@ -148,11 +151,18 @@ impl Token {
     }
 
     /// Tries to parse the string as a keyword and if it fails returns a Token::Ident() with the provided string
-    fn from_ident_or_keyword(string: &String) -> Self {
+    /// if the string is true or false then it will return Token::Bool
+    fn from_ident_or_keyword(string: &str) -> Self {
+        match string {
+            "true" => return Self::Bool(true),
+            "false" => return Self::Bool(false),
+            _ => (),
+        };
+
         if let Some(keyword) = Keyword::from_str(&string) {
             return Self::Keyword(keyword);
         } else {
-            return Self::Ident(string.clone());
+            return Self::Ident(string.to_owned());
         }
     }
 }
