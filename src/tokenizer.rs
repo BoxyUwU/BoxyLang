@@ -1,6 +1,6 @@
 use std::str::Chars;
 
-#[derive(Debug)]
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Keyword {
     Fn,
     Struct,
@@ -37,30 +37,38 @@ impl Keyword {
 }
 
 #[derive(Debug)]
-pub enum Operator {
-    Not,
-    NotEquals,
+/// These tokens are not disambiguated between the unary and binary operators with the same token
+/// E.g. the '-' in 10 - 10 and -10 will both tokenize as OpToken::Minus
+pub enum OpToken {
+    Excl,
+    ExclEqual,
 
-    Assign,
-    Equals,
+    Equal,
+    EqualEqual,
 
-    Add,
-    Sub,
-    Mul,
-    Div,
+    Plus,
+    Minus,
+    Star,
+    FwdSlash,
 
     AddAssign,
     SubAssign,
     MulAssign,
     DivAssign,
+
+    LessThan,
+    GreaterThan,
+
+    LessThanEqualTo,
+    GreaterThanEqualTo,
 }
 
-#[derive(Debug)]
-pub enum SpecialCharacter {
+#[derive(Copy, Clone, Eq, PartialEq, Debug)]
+pub enum SpecialToken {
     Dot,
 
-    LBrace,
-    RBrace,
+    LParen,
+    RParen,
     LCurly,
     RCurly,
     LSquare,
@@ -68,15 +76,19 @@ pub enum SpecialCharacter {
 
     Semicolon,
     Colon,
+
+    Returns,
+
+    Comma,
 }
 
-impl SpecialCharacter {
+impl SpecialToken {
     fn from_char(operator: char) -> Option<Self> {
         Some(match operator {
             '.' => Self::Dot,
 
-            '(' => Self::LBrace,
-            ')' => Self::RBrace,
+            '(' => Self::LParen,
+            ')' => Self::RParen,
             '{' => Self::LCurly,
             '}' => Self::RCurly,
             '[' => Self::LSquare,
@@ -85,45 +97,70 @@ impl SpecialCharacter {
             ';' => Self::Semicolon,
             ':' => Self::Colon,
 
+            ',' => Self::Comma,
+
             _ => return None,
         })
     }
 }
 
 pub fn is_special_or_operator_char(character: char) -> bool {
-    let is_special = || {
-        matches!(
-            character,
-            '.' | '{' | '}' | '[' | ']' | '(' | ')' | '<' | '>' | ';' | ':'
-        )
-    };
-    let is_operator = || matches!(character, '!' | '=' | '+' | '-' | '*' | '/');
-
-    is_operator() || is_special()
+    matches!(
+        character,
+        '.' | '{'
+            | '}'
+            | '['
+            | ']'
+            | '('
+            | ')'
+            | ';'
+            | ':'
+            | '!'
+            | '='
+            | '+'
+            | '-'
+            | '*'
+            | '/'
+            | '<'
+            | '>'
+            | ','
+    )
 }
 
 #[derive(Debug)]
-pub enum Token {
+pub enum Literal {
     Integer(String),
     Float(String),
     Str(String),
     Bool(bool),
+}
 
-    Operator(Operator),
+impl Literal {
+    fn print(&self) {
+        match self {
+            Self::Bool(b) => println!("bool: {}", b),
+            Self::Integer(int) => println!("int: {}", int),
+            Self::Float(num) => println!("float: {}", num),
+            Self::Str(string) => println!("string: \"{}\"", string),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum Token {
+    Literal(Literal),
+    Operator(OpToken),
     Ident(String),
     Keyword(Keyword),
-    Special(SpecialCharacter),
+    Special(SpecialToken),
 }
 
 impl Token {
     pub fn print(&self) {
         match self {
-            Self::Bool(b) => println!("bool: {}", b),
+            Self::Literal(lit) => lit.print(),
             Self::Operator(op) => println!("operator: {:?}", op),
-            Self::Integer(int) => println!("int: {}", int),
-            Self::Float(num) => println!("float: {}", num),
-            Self::Str(string) => println!("string: \"{}\"", string),
-            Self::Special(SpecialCharacter::Semicolon) => println!("semicolon \n"),
+            Self::Special(SpecialToken::Semicolon) => println!("semicolon \n"),
             Self::Special(special) => println!("special: {:?}", special),
             Self::Keyword(keyword) => println!("{:?}", keyword),
             Self::Ident(string) => println!("ident: {}", string),
@@ -134,8 +171,8 @@ impl Token {
     /// if the string is true or false then it will return Token::Bool
     pub fn from_ident_or_keyword(string: &str) -> Self {
         match string {
-            "true" => return Self::Bool(true),
-            "false" => return Self::Bool(false),
+            "true" => return Self::Literal(Literal::Bool(true)),
+            "false" => return Self::Literal(Literal::Bool(false)),
             _ => (),
         };
 
@@ -147,7 +184,37 @@ impl Token {
     }
 }
 
-#[derive(Debug)]
+impl Token {
+    pub fn assert_keyword(&self, assert_keyword: Keyword) -> Result<(), ()> {
+        if let Self::Keyword(keyword) = self {
+            if *keyword == assert_keyword {
+                return Ok(());
+            };
+        }
+
+        Err(())
+    }
+
+    pub fn assert_ident(self) -> Result<String, ()> {
+        if let Self::Ident(string) = self {
+            Ok(string)
+        } else {
+            Err(())
+        }
+    }
+
+    pub fn assert_special(&self, assert_special: SpecialToken) -> Result<(), ()> {
+        if let Self::Special(special) = self {
+            if *special == assert_special {
+                return Ok(());
+            }
+        }
+
+        Err(())
+    }
+}
+
+#[derive(Clone, Debug)]
 pub enum ParseError {
     UnmatchedQuote,
     MalformedFloat,
@@ -208,10 +275,10 @@ impl<'a> Iterator for Tokenizer<'a> {
                     token.push('.');
                 }
                 Some(c) if c.is_whitespace() || is_special_or_operator_char(*c) => {
-                    return Some(Ok(Token::Integer(token)));
+                    return Some(Ok(Token::Literal(Literal::Integer(token))));
                 }
                 Some(_) => return Some(Err(ParseError::MalformedInt)),
-                None => return Some(Ok(Token::Integer(token))),
+                None => return Some(Ok(Token::Literal(Literal::Integer(token)))),
             }
 
             // Number is a float
@@ -220,10 +287,10 @@ impl<'a> Iterator for Tokenizer<'a> {
                     Some('.') => return Some(Err(ParseError::MalformedFloat)),
                     Some(c) if c.is_numeric() => token.push(self.source.next().unwrap()),
                     Some(c) if c.is_whitespace() || is_special_or_operator_char(*c) => {
-                        return Some(Ok(Token::Float(token)));
+                        return Some(Ok(Token::Literal(Literal::Float(token))));
                     }
                     Some(_) => return Some(Err(ParseError::MalformedFloat)),
-                    None => return Some(Ok(Token::Float(token))),
+                    None => return Some(Ok(Token::Literal(Literal::Float(token)))),
                 }
             }
         }
@@ -237,52 +304,67 @@ impl<'a> Iterator for Tokenizer<'a> {
                     Some('.') => return Some(Err(ParseError::MalformedFloat)),
                     Some(c) if c.is_numeric() => token.push(self.source.next().unwrap()),
                     Some(c) if c.is_whitespace() || is_special_or_operator_char(*c) => {
-                        return Some(Ok(Token::Float(token)));
+                        return Some(Ok(Token::Literal(Literal::Float(token))));
                     }
                     Some(_) => return Some(Err(ParseError::MalformedFloat)),
-                    None => return Some(Ok(Token::Float(token))),
+                    None => return Some(Ok(Token::Literal(Literal::Float(token)))),
                 }
             }
         } else if c == '=' {
             if matches!(self.source.peek(), Some('=')) {
                 self.source.next().unwrap();
-                return Some(Ok(Token::Operator(Operator::Equals)));
+                return Some(Ok(Token::Operator(OpToken::EqualEqual)));
             }
-            return Some(Ok(Token::Operator(Operator::Assign)));
+            return Some(Ok(Token::Operator(OpToken::Equal)));
         } else if c == '!' {
             if matches!(self.source.peek(), Some('=')) {
                 self.source.next().unwrap();
-                return Some(Ok(Token::Operator(Operator::NotEquals)));
+                return Some(Ok(Token::Operator(OpToken::ExclEqual)));
             }
-            return Some(Ok(Token::Operator(Operator::Not)));
+            return Some(Ok(Token::Operator(OpToken::Excl)));
         } else if c == '+' {
             if matches!(self.source.peek(), Some('=')) {
                 self.source.next().unwrap();
-                return Some(Ok(Token::Operator(Operator::AddAssign)));
+                return Some(Ok(Token::Operator(OpToken::AddAssign)));
             }
-            return Some(Ok(Token::Operator(Operator::Add)));
+            return Some(Ok(Token::Operator(OpToken::Plus)));
         } else if c == '-' {
             if matches!(self.source.peek(), Some('=')) {
                 self.source.next().unwrap();
-                return Some(Ok(Token::Operator(Operator::SubAssign)));
+                return Some(Ok(Token::Operator(OpToken::SubAssign)));
+            } else if matches!(self.source.peek(), Some('>')) {
+                self.source.next().unwrap();
+                return Some(Ok(Token::Special(SpecialToken::Returns)));
             }
-            return Some(Ok(Token::Operator(Operator::Sub)));
+            return Some(Ok(Token::Operator(OpToken::Minus)));
         } else if c == '*' {
             if matches!(self.source.peek(), Some('=')) {
                 self.source.next().unwrap();
-                return Some(Ok(Token::Operator(Operator::MulAssign)));
+                return Some(Ok(Token::Operator(OpToken::MulAssign)));
             }
-            return Some(Ok(Token::Operator(Operator::Mul)));
+            return Some(Ok(Token::Operator(OpToken::Star)));
         } else if c == '/' {
             if matches!(self.source.peek(), Some('=')) {
                 self.source.next().unwrap();
-                return Some(Ok(Token::Operator(Operator::DivAssign)));
+                return Some(Ok(Token::Operator(OpToken::DivAssign)));
             }
-            return Some(Ok(Token::Operator(Operator::Div)));
+            return Some(Ok(Token::Operator(OpToken::FwdSlash)));
+        } else if c == '<' {
+            if matches!(self.source.peek(), Some('=')) {
+                self.source.next().unwrap();
+                return Some(Ok(Token::Operator(OpToken::LessThanEqualTo)));
+            }
+            return Some(Ok(Token::Operator(OpToken::LessThan)));
+        } else if c == '>' {
+            if matches!(self.source.peek(), Some('=')) {
+                self.source.next().unwrap();
+                return Some(Ok(Token::Operator(OpToken::GreaterThanEqualTo)));
+            }
+            return Some(Ok(Token::Operator(OpToken::GreaterThan)));
         }
         // Special Chars
-        else if let Some(special_char) = SpecialCharacter::from_char(c) {
-            if matches!(special_char, SpecialCharacter::Dot) {
+        else if let Some(special_char) = SpecialToken::from_char(c) {
+            if matches!(special_char, SpecialToken::Dot) {
                 return Some(Err(ParseError::UnexpectedDot));
             }
             return Some(Ok(Token::Special(special_char)));
@@ -373,7 +455,7 @@ impl<'a> Iterator for Tokenizer<'a> {
                         Some(c) => token.push(c),
                         None => return Some(Err(ParseError::UnmatchedQuote)),
                     },
-                    '"' => return Some(Ok(Token::Str(token))),
+                    '"' => return Some(Ok(Token::Literal(Literal::Str(token)))),
                     _ => token.push(c),
                 }
             }
@@ -416,8 +498,7 @@ impl<'a> Iterator for Tokenizer<'a> {
                 match self.source.peek() {
                     Some('.') => {
                         self.source.next().unwrap();
-                        self.token_buffer
-                            .push(Token::Special(SpecialCharacter::Dot));
+                        self.token_buffer.push(Token::Special(SpecialToken::Dot));
 
                         match self.source.peek() {
                             Some(c) if c.is_alphanumeric() => continue,
