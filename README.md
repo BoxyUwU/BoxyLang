@@ -1,1 +1,1 @@
-BoxyLang2
+failed attempt at a language lmao
